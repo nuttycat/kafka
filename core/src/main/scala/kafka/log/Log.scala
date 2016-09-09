@@ -401,7 +401,8 @@ class Log(val dir: File,
         }
 
         // maybe roll the log if this segment is full
-        val segment = maybeRoll(validMessages.sizeInBytes)
+        val segment = maybeRoll(messagesSize = validMessages.sizeInBytes,
+                                maxTimestampInMessages = appendInfo.maxTimestamp)
 
         // now append to the log
         segment.append(firstOffset = appendInfo.firstOffset, largestTimestamp = appendInfo.maxTimestamp,
@@ -656,14 +657,9 @@ class Log(val dir: File,
    * @param predicate A function that takes in a single log segment and returns true iff it is deletable
    * @return The number of segments deleted
    */
-  def deleteOldSegments(predicate: LogSegment => Boolean): Int = {
+  private def deleteOldSegments(predicate: LogSegment => Boolean): Int = {
     lock synchronized {
-      //find any segments that match the user-supplied predicate UNLESS it is the final segment
-      //and it is empty (since we would just end up re-creating it)
-      val lastEntry = segments.lastEntry
-      val deletable =
-        if (lastEntry == null) Seq.empty
-        else logSegments.takeWhile(s => predicate(s) && (s.baseOffset != lastEntry.getValue.baseOffset || s.size > 0))
+      val deletable = deletableSegments(predicate)
       val numToDelete = deletable.size
       if (numToDelete > 0) {
         // we must always have at least one segment, so if we are going to delete all the segments, create a new one first
@@ -674,6 +670,47 @@ class Log(val dir: File,
       }
       numToDelete
     }
+  }
+
+  /**
+    * Find segments starting from the oldest until the the user-supplied predicate is false.
+    * A final segment that is empty will never be returned (since we would just end up re-creating it).
+    * @param predicate A function that takes in a single log segment and returns true iff it is deletable
+    * @return the segments ready to be deleted
+    */
+  private def deletableSegments(predicate: LogSegment => Boolean) = {
+    val lastEntry = segments.lastEntry
+    if (lastEntry == null) Seq.empty
+    else logSegments.takeWhile(s => predicate(s) && (s.baseOffset != lastEntry.getValue.baseOffset || s.size > 0))
+  }
+
+  /**
+    * Delete any log segments that have either expired due to time based retention
+    * or because the log size is > retentionSize
+    */
+  def deleteOldSegments(): Int = {
+    if (!config.delete) return 0
+    deleteRetenionMsBreachedSegments() + deleteRetentionSizeBreachedSegments()
+  }
+
+  private def deleteRetenionMsBreachedSegments() : Int = {
+    if (config.retentionMs < 0) return 0
+    val startMs = time.milliseconds
+    deleteOldSegments(startMs - _.largestTimestamp > config.retentionMs)
+  }
+
+  private def deleteRetentionSizeBreachedSegments() : Int = {
+    if (config.retentionSize < 0 || size < config.retentionSize) return 0
+    var diff = size - config.retentionSize
+    def shouldDelete(segment: LogSegment) = {
+      if (diff - segment.size >= 0) {
+        diff -= segment.size
+        true
+      } else {
+        false
+      }
+    }
+    deleteOldSegments(shouldDelete)
   }
 
   /**
@@ -700,6 +737,7 @@ class Log(val dir: File,
    * Roll the log over to a new empty log segment if necessary.
    *
    * @param messagesSize The messages set size in bytes
+   * @param maxTimestampInMessages The maximum timestamp in the messages.
    * logSegment will be rolled if one of the following conditions met
    * <ol>
    * <li> The logSegment is full
@@ -709,16 +747,17 @@ class Log(val dir: File,
    * </ol>
    * @return The currently active segment after (perhaps) rolling to a new segment
    */
-  private def maybeRoll(messagesSize: Int): LogSegment = {
+  private def maybeRoll(messagesSize: Int, maxTimestampInMessages: Long): LogSegment = {
     val segment = activeSegment
-    val reachedRollMs = segment.timeWaitedForRoll(time.milliseconds) > config.segmentMs - segment.rollJitterMs
+    val now = time.milliseconds
+    val reachedRollMs = segment.timeWaitedForRoll(now, maxTimestampInMessages) > config.segmentMs - segment.rollJitterMs
     if (segment.size > config.segmentSize - messagesSize ||
         (segment.size > 0 && reachedRollMs) ||
         segment.index.isFull || segment.timeIndex.isFull) {
       debug(s"Rolling new log segment in $name (log_size = ${segment.size}/${config.segmentSize}}, " +
           s"index_size = ${segment.index.entries}/${segment.index.maxEntries}, " +
           s"time_index_size = ${segment.timeIndex.entries}/${segment.timeIndex.maxEntries}, " +
-          s"inactive_time_ms = ${segment.timeWaitedForRoll(time.milliseconds)}/${config.segmentMs - segment.rollJitterMs}).")
+          s"inactive_time_ms = ${segment.timeWaitedForRoll(now, maxTimestampInMessages)}/${config.segmentMs - segment.rollJitterMs}).")
       roll()
     } else {
       segment

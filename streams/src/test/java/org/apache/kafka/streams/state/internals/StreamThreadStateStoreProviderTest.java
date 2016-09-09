@@ -23,6 +23,7 @@ import org.apache.kafka.common.utils.SystemTime;
 import org.apache.kafka.common.utils.Utils;
 import org.apache.kafka.streams.StreamsConfig;
 import org.apache.kafka.streams.StreamsMetrics;
+import org.apache.kafka.streams.errors.InvalidStateStoreException;
 import org.apache.kafka.streams.processor.TaskId;
 import org.apache.kafka.streams.processor.TopologyBuilder;
 import org.apache.kafka.streams.processor.internals.ProcessorTopology;
@@ -62,6 +63,7 @@ public class StreamThreadStateStoreProviderTest {
     private StreamThreadStateStoreProvider provider;
     private StateDirectory stateDirectory;
     private File stateDir;
+    private boolean storesAvailable;
 
     @Before
     public void before() throws IOException {
@@ -92,7 +94,8 @@ public class StreamThreadStateStoreProviderTest {
         configureRestoreConsumer(clientSupplier, "applicationId-kv-store-changelog");
         configureRestoreConsumer(clientSupplier, "applicationId-window-store-changelog");
 
-        final ProcessorTopology topology = builder.build("X", null);
+        builder.setApplicationId(applicationId);
+        final ProcessorTopology topology = builder.build(null);
         final Map<TaskId, StreamTask> tasks = new HashMap<>();
         stateDirectory = new StateDirectory(applicationId, stateConfigDir);
         taskOne = createStreamsTask(applicationId, streamsConfig, clientSupplier, topology,
@@ -104,6 +107,7 @@ public class StreamThreadStateStoreProviderTest {
         tasks.put(new TaskId(0, 1),
                   taskTwo);
 
+        storesAvailable = true;
         thread = new StreamThread(builder, streamsConfig, clientSupplier,
                                   applicationId,
                                   "clientId", UUID.randomUUID(), new Metrics(),
@@ -111,6 +115,11 @@ public class StreamThreadStateStoreProviderTest {
             @Override
             public Map<TaskId, StreamTask> tasks() {
                 return tasks;
+            }
+
+            @Override
+            public boolean isInitialized() {
+                return storesAvailable;
             }
         };
         provider = new StreamThreadStateStoreProvider(thread);
@@ -160,6 +169,12 @@ public class StreamThreadStateStoreProviderTest {
     public void shouldReturnEmptyListIfStoreExistsButIsNotOfTypeValueStore() throws Exception {
         assertEquals(Collections.emptyList(), provider.stores("window-store",
                                                               QueryableStoreTypes.keyValueStore()));
+    }
+
+    @Test(expected = InvalidStateStoreException.class)
+    public void shouldThrowInvalidStoreExceptionIfNotAllStoresAvailable() throws Exception {
+        storesAvailable = false;
+        provider.stores("kv-store", QueryableStoreTypes.keyValueStore());
     }
 
     private StreamTask createStreamsTask(final String applicationId,

@@ -88,7 +88,7 @@ public class ProducerConfig extends AbstractConfig {
                                            + " acknowledging the record but before the followers have replicated it then the record will be lost."
                                            + " <li><code>acks=all</code> This means the leader will wait for the full set of in-sync replicas to"
                                            + " acknowledge the record. This guarantees that the record will not be lost as long as at least one in-sync replica"
-                                           + " remains alive. This is the strongest available guarantee.";
+                                           + " remains alive. This is the strongest available guarantee. This is equivalent to the acks=-1 setting.";
 
     /** <code>timeout.ms</code> */
 
@@ -293,7 +293,7 @@ public class ProducerConfig extends AbstractConfig {
                                         CommonClientConfigs.CONNECTIONS_MAX_IDLE_MS_DOC)
                                 .define(PARTITIONER_CLASS_CONFIG,
                                         Type.CLASS,
-                                        DefaultPartitioner.class.getName(),
+                                        DefaultPartitioner.class,
                                         Importance.MEDIUM, PARTITIONER_CLASS_DOC)
                                 .define(INTERCEPTOR_CLASSES_CONFIG,
                                         Type.LIST,
